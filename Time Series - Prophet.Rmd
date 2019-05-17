@@ -1,0 +1,464 @@
+---
+title: "Time Series Forecasting"
+author: "chandrakanth"
+date: "May 17, 2019"
+output: html_document
+---
+
+## Loading Required Libraries
+
+```{r setup,echo=FALSE,message=FALSE,error=FALSE,warning=FALSE,include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE,cache = FALSE)
+unloadNamespace('lubridate')
+unloadNamespace('forecast')
+unloadNamespace('timeDate')
+unloadNamespace('splusTimeDate')
+library(tidyverse)
+library(splusTimeDate)
+library(bizdays)
+library(tools)
+library(rmarkdown)
+library(knitr)
+library(zoo)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(stringr)
+library(scales)
+library(dygraphs)
+library(gridExtra)
+library(grid)
+library(htmltools)
+library(readxl)
+library(kableExtra)
+library(bsts)
+library(readxl)
+options(scipen=999)
+
+
+##extra time series packages - need to add more here
+library(tseries)
+library(prophet)
+library(StanHeaders)
+library(httr)
+```
+
+## Dataset
+
+This dataset describes the minimum daily temperatures over 10 years (1981-1990) in the city Melbourne, Australia. The units are in degrees Celsius and there are 3650 observations. The source of the data is credited as the Australian Bureau of Meteorology.
+
+```{r,message=FALSE,warning=FALSE}
+setwd("D:/Competitions/Time Series")
+data <- read_csv("daily_temperatures.csv")
+summary(data)
+```
+
+## Creating Date Time Variables
+
+You can also embed plots, for example:
+
+```{r,message=FALSE,warning=FALSE}
+library(lubridate)
+library(forecast)
+data_features <- data %>%
+  mutate(periodbyday = Date,
+         dayofweek = weekdays(periodbyday),
+         weekofyear = week(periodbyday),
+         monthofperiod = month(periodbyday),
+         yearofperiod = year(periodbyday),
+         daymonth = substr(periodbyday,6,10))
+```
+
+## Looking at the seasonal trends
+
+As we can see from the graph below there seems to be a clear pattern in terms of how the temperature various over the years
+
+```{r, fig.width=16, fig.height=4}
+# plots to show historical temp and hidden seasonal trends
+viz_historical_daily_temp <- data_features %>% 
+  ggplot(aes(x = periodbyday, y = Temp)) + geom_line(color = "#0AA147") +
+  labs(y = "Temp", x = "Time") +
+  ggtitle("Daily Min Temp") + theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_date(date_labels = "%Y") +
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_historical_daily_temp
+```
+
+If we look more closely there are a lot more hidden patterns as shown below.
+
+```{r}
+yoy <- data_features %>%
+  group_by(yearofperiod) %>% summarise(med_temp = median(Temp))
+
+viz_year_on_year <- yoy %>%
+  ggplot(aes(x = yearofperiod, y = med_temp)) + geom_point(color = "#0AA147", size = 2.5) + 
+  geom_line(color = "#0AA147", size = 1.25) +
+  scale_x_continuous(breaks = seq(1981,1990,1)) +
+  labs(y = "Temp", x = "Year") +
+  ggtitle("Average Daily Min Temp by Year") + theme(plot.title = element_text(hjust = 0.5)) +
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_year_on_year
+```
+
+```{r}
+mom <- data_features %>% 
+  group_by(monthofperiod) %>% summarise(med_temp = median(Temp))
+
+viz_month_on_month <- mom %>%
+  ggplot(aes(x = monthofperiod, y = med_temp)) + geom_point(color = "#0AA147", size = 2.5) + 
+  geom_line(color = "#0AA147", size = 1.25) +
+  scale_x_continuous(breaks = seq(1,12,1)) + labs(y = "Temp", x = "Month") +
+  ggtitle("Average Daily Min Temp by Month") + theme(plot.title = element_text(hjust = 0.5))+
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_month_on_month
+```
+
+```{r}
+dow <- data_features %>% 
+  group_by(dayofweek) %>% summarise(med_temp = median(Temp))
+
+dow$dayofweek <- factor(dow$dayofweek, levels = c("Monday", "Tuesday", "Wednesday", 
+                                                  "Thursday", "Friday", "Saturday", "Sunday"))
+
+viz_day_of_week <- dow %>%
+  ggplot(aes(x = dayofweek, y = med_temp, group = 1)) + geom_point(color = "#0AA147", size = 2.5) + 
+  geom_line(color = "#0AA147", size = 1.25) +
+  labs(y = "Temp", x = "Day of Week") +
+  ggtitle("Average Daily Min Temp by Day of Week") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_day_of_week
+```
+
+
+```{r}
+wow <- data_features %>% 
+  group_by(weekofyear) %>% summarise(med_temp = median(Temp))
+
+viz_week_of_year <- wow %>%
+  ggplot(aes(x = weekofyear, y = med_temp)) + geom_point(color = "#0AA147", size = 2.5) + 
+  geom_line(color = "#0AA147", size = 1.25) +
+  labs(y = "Temp", x = "Week of Year") +
+  scale_x_continuous(breaks = seq(1,53,5)) +
+  ggtitle("Average Daily Min Temp by Week of Year") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_week_of_year
+```
+
+
+```{r}
+dom <- data_features %>%
+  mutate(dayofmonth = day(periodbyday)) %>%
+  group_by(dayofmonth) %>% summarise(med_temp = median(Temp))
+
+viz_day_of_month <- dom %>%
+  ggplot(aes(x = dayofmonth, y = med_temp)) + geom_point(color = "#0AA147", size = 2.5) + 
+  geom_line(color = "#0AA147", size = 1.25) +
+  labs(y = "Temp", x = "Day of Month") +
+  scale_x_continuous(breaks = seq(0,31,5)) +
+  ggtitle("Average Daily Min Temp by Day of Month") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        legend.title=element_text(size=12, face="bold"), 
+        legend.text=element_text(size=10, face="bold"),
+        axis.text=element_text(size=10, face="bold"),
+        axis.title=element_text(size=10,face="bold"),
+        legend.key.size = unit(3,"line"))
+
+viz_day_of_month
+```
+
+## Data preparation for modeling
+
+Since we have a time series data for over 10 years, we can use the last 2 years of data for testing our model performance and use the remaining 8 years of data to train and tune the model. In training we use 7 years of data to train and then predict for the next 1 year to search for the best parameters and then finally fit the model on the entire training data and then predict for last two years
+
+```{r,message=FALSE,error=FALSE,warning=FALSE, include=FALSE, cache=TRUE}
+# This code searches for the best parameter values to include in our model to predict for the test period
+# It determines which combination of parameters is the optimal set by  
+# using Temp up to the same day last year to predict for the last year in training
+# The combination of parameters that generated the smallest error will be the set used for predicting
+
+train <- data_features %>%
+  filter(periodbyday <= as.Date('1987-12-31')) %>%
+  rename(ds = periodbyday, y = Temp) %>%
+  dplyr::select(ds,y) %>%
+  distinct()
+
+# create all possible combinations of parameters to set for the forecasting model
+prophetGrid <- expand.grid(changepoint_prior_scale = c(0.15, 0.2, .1),
+                           seasonality_prior_scale = c(75, 120, 100),
+                           changepoint_range = c(.8, .7, .6),
+                           n_changepoints = c(25, 40, 60))
+
+# initialize a results vector which will store the MAPE for the predicted values
+results <- vector(mode = 'numeric', length = nrow(prophetGrid))
+
+# loop through all possible combinations of the parameters to generate a model for
+for (i in seq_len(nrow(prophetGrid))) {
+  #print(i)
+  parameters <- prophetGrid[i, ]
+  m <- prophet(seasonality.prior.scale = parameters$seasonality_prior_scale,
+               changepoint.prior.scale = parameters$changepoint_prior_scale,
+               changepoint.range = parameters$changepoint_range,
+               n.changepoints = parameters$n_changepoints)
+  # adding quarterly, monthly and weekly sesonality
+  m <- add_seasonality(m, name='monthly', period=30.5, fourier.order=5)
+  m <- add_seasonality(m, name='quarterly', period=91.3, fourier.order=10)
+  m <- add_seasonality(m, name='weekly', period=7, fourier.order=7)
+  m <- fit.prophet(m, df = train)
+  
+  # create a future data frame which will store the predictions generated by the model
+  
+  future <- make_future_dataframe(m, periods = 365, freq = 'day')
+  
+  # predict the volumes for the forecasting period
+  
+  forecast <- predict(m, future)
+  
+  # change the timestamp of the forecasts to a date
+  forecast2 <- forecast %>%
+    mutate(ds2 = as.Date(ds))
+  
+  # match the predicted call volume to all days before the end of the same horizon period of last year
+  # remove outliers before matching
+  # calculate the error, absolute error, percent error, absolute percent error, and the squared error for every prediction
+  data_perf <- data_features %>%
+    filter(periodbyday <= as.Date('1988-12-31')) %>%
+    left_join(forecast2, by = c("periodbyday" = "ds2")) %>%
+    mutate(data_set = ifelse(periodbyday <= as.Date('1987-12-31'),"train","test"),
+           error = Temp - yhat,
+           AE = abs(Temp - yhat),
+           PE = (Temp - yhat)/Temp,
+           APE = abs((Temp - yhat)/Temp),
+           squared_error = (Temp - yhat)^2)
+  
+  # calculate the MAE for test period
+  results[i] <- mean(data_perf$AE[data_perf$data_set == "test"])
+}
+
+# after the loop is finished bind the MAPE results for each model to its respective parameter combination used to create it
+prophetGrid <- cbind(prophetGrid, results)
+
+# select the combination of parameters which generated the most accurate model for the same horizon period last year
+best_params <- prophetGrid[prophetGrid$results == min(results), ]
+
+# check to make sure that no NA values were assigned to a best parameter.
+if(any(is.na(best_params))){
+  stop("There was a parameter selected with NA.")
+}
+
+# output the minimum MAE
+print(paste0("The best possible combination of parameters generated an MAE of ", min(results)))
+```
+
+
+```{r,message=FALSE,error=FALSE,warning=FALSE, include=FALSE}
+# remove the upper and lower 1% of outlier points in the training data before running the model to identify new outliers
+train <- data_features %>% 
+  filter(periodbyday <= as.Date('1988-12-31')) %>%
+  rename(ds = periodbyday, y = Temp) %>%
+  dplyr::select(ds,y) %>%
+  distinct()
+
+# fit the prophet model for determining outliers with the optimal parameters from the grid search above
+# the model has a yearly, monthly, and weekly seasonality
+model_baseline <- prophet(changepoint.prior.scale = best_params$changepoint_prior_scale,
+                          seasonality.prior.scale = best_params$seasonality_prior_scale,
+                          changepoint.range = best_params$changepoint_range,
+                          n.changepoints = best_params$n_changepoints,
+                          seasonality.mode = "additive",
+                          interval.width = .95)
+
+model_baseline <- add_seasonality(model_baseline, name='monthly', period=30.5, fourier.order=5)
+model_baseline <- add_seasonality(model_baseline, name='quarterly', period=91.3, fourier.order=10)
+model_baseline <- add_seasonality(model_baseline, name='weekly', period=7, fourier.order=7, prior.scale= best_params$seasonality_prior_scale)
+
+model_baseline <- fit.prophet(model_baseline, df = train)
+
+# find the max date of the training period for building the model
+max_date <- max(train$ds)
+
+# make a data frame with the training period dates
+# the number of periods to predict for is 2 years
+future <- make_future_dataframe(model_baseline, periods = 731, freq = 'day')
+
+# generate forecasts
+# filter to only the predictions in the training period
+forecast_model_baseline_predictions <- predict(model_baseline, future) %>%
+  mutate(ds= as.Date(ds)) %>% 
+  filter(ds < as.Date('1988-12-31')) %>% 
+  dplyr::select(ds,yhat)
+
+# identify outliers 
+forecast_model_baseline_performance <- train %>% 
+  left_join(forecast_model_baseline_predictions, by = c("ds")) %>% 
+  mutate(error = y - yhat,
+         AE = abs(y - yhat),
+         PE = (y - yhat)/y,
+         APE = abs((y - yhat)/y),
+         squared_error = (y - yhat)^2)
+
+upper_bound <- quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[2] + 1.5*(quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[2] - quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[1])
+
+lower_bound <- quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[1] - 1.5*(quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[2] - quantile(forecast_model_baseline_performance$error,probs=c(.25,.75))[1])
+
+forecasts_outliers_after_fit <- forecast_model_baseline_performance %>% 
+  filter(!between(error, lower_bound, upper_bound)) %>% 
+  mutate(outlier = 1) %>% 
+  dplyr::select(ds,outlier)
+
+# check and output the number of outliers removed
+
+ifelse(nrow(forecasts_outliers_after_fit) > 40 , 
+       stop("There were more than 40 outliers removed because the error the model fit was above or below the upper and lower outlier bound threshold. This is too many removed."), 
+       print(paste0("There were ", nrow(forecasts_outliers_after_fit), " outliers removed because the forecast error the model fit was above or below the upper and lower outlier bound threshold.")))
+
+```
+
+
+```{r,message=FALSE,error=FALSE,warning=FALSE}
+####### fit the final forecast model to predict
+
+
+# remove outliers based on the quantile and error when model was fit above in the training data before running the model
+train <- data_features %>% 
+  filter(periodbyday <= as.Date('1988-12-31')) %>%
+  left_join(forecasts_outliers_after_fit, by= c("periodbyday" = "ds")) %>% #removes outliers
+  replace_na(list(outlier = 0)) %>% 
+  filter(outlier != 1) %>% 
+  rename(ds = periodbyday, y = Temp) %>%
+  dplyr::select(ds,y) %>%
+  distinct()
+
+# fit the prophet model with the optimal parameters from the grid search to predict
+# the model has a yearly, monthly, and weekly seasonality 
+model_baseline <- prophet(changepoint.prior.scale = best_params$changepoint_prior_scale,
+                          seasonality.prior.scale = best_params$seasonality_prior_scale,
+                          changepoint.range = best_params$changepoint_range,
+                          n.changepoints = best_params$n_changepoints,
+                          seasonality.mode = "additive",
+                          interval.width = .95) 
+model_baseline <- add_seasonality(model_baseline, name='monthly', period=30.5, fourier.order=5)
+# adding quarterly sesonality
+model_baseline <- add_seasonality(model_baseline, name='quarterly', period=91.3, fourier.order=10)
+model_baseline <- add_seasonality(model_baseline, name='weekly', period=7, fourier.order=7, prior.scale= best_params$seasonality_prior_scale)
+
+model_baseline <- fit.prophet(model_baseline, df = train)
+
+# find the max date of the training period
+max_date <- max(train$ds)
+
+# make a data frame for predictions
+# the number of periods to predict for is the number of days between today and two months ahead of today plus 
+# the number of days between today and the last day of the training data
+future <- make_future_dataframe(model_baseline, periods = 731, freq = 'day')
+
+
+# generate forecasts for the horizon period and the training period
+forecast_model_baseline <- predict(model_baseline, future) %>%
+  mutate(ds= as.Date(ds))
+
+# select the date, forecasted temperature, the prediction interval
+final_daily_forecasts <- forecast_model_baseline %>%
+  dplyr::select(ds, yhat, yhat_lower, yhat_upper)
+
+# filter to only the horizon period forecasts
+final_daily_future_forecasts <- final_daily_forecasts %>% 
+  filter(ds > as.Date('1988-12-31')) %>% 
+  rename(`date` = ds,
+         prediction = yhat,
+         lower_bound = yhat_lower,
+         upper_bound = yhat_upper)
+
+# filter to only the training period forecasts
+final_daily_future_forecasts_train <- train %>% 
+  left_join(final_daily_forecasts, by = "ds")%>% 
+  filter(ds <= as.Date('1988-12-31')) %>% 
+  mutate(AE = abs(yhat - y))
+
+```
+
+Here we can see how the model learned various hidden seasonal patterns
+
+```{r,echo=FALSE,message=FALSE,error=FALSE,warning=FALSE, fig.height=14, fig.width=12}
+prophet_plot_components(m, forecast_model_baseline)
+```
+
+```{r, include=FALSE}
+# output the 5 number summary of the predictions
+print(paste0("The five number summary of predicted call volumes is:"))
+print(summary(final_daily_future_forecasts$prediction))
+
+# output the MAE for the training day
+print(paste0("The MAE for the training data was ", mean(final_daily_future_forecasts_train$AE, na.rm =T), "."))
+
+# output the number of forecasts made for the future time period
+print(paste0("There were ",nrow(final_daily_future_forecasts), " forecasts made for the last 2 years."))
+
+# output the last forecast made
+print(paste0("The last forecast made was for ", max(final_daily_future_forecasts$`date`),"."))
+
+# write the predictions to the file share for ECC to use for staffing.
+
+# Calculate the first and last date of the prediction period to name the forecast file
+min_pred <- min(final_daily_future_forecasts$`date`, na.rm = T)
+max_pred <- max(final_daily_future_forecasts$`date`, na.rm = T)
+
+# specify the pth of the file the data will be written to
+path <- paste0("D:/Competitions/Time Series/","Final","_",min_pred,"_",max_pred,"_","Forecasts.csv")
+
+# write the predictions to the file share
+write.csv(final_daily_future_forecasts,path)
+
+eval_model <- final_daily_future_forecasts %>%
+  left_join(data_features, by = c("date" = "periodbyday")) %>%
+  dplyr::select(date, prediction, Temp) %>%
+  mutate(error = prediction - Temp)
+
+print(paste0("Test RMSE ", sqrt(mean(eval_model$error^2))))
+
+```
+
+## Conclusion
+
+As we can see the model performed very well and our final predictions are only off by 3 degrees on an average for the 2 years
